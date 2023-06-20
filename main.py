@@ -1,7 +1,7 @@
 import gradio
 from dotenv import load_dotenv
 from langchain import PromptTemplate
-from langchain.chains import RetrievalQA
+from langchain.chains import ConversationalRetrievalChain
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from langchain.vectorstores import Chroma
@@ -9,11 +9,15 @@ from langchain.llms import GPT4All, LlamaCpp
 import os
 import gradio as gr
 import subprocess
-
 from constants import CHROMA_SETTINGS
+from langchain.memory import ConversationBufferMemory
 
+##keep conversational buffer to make it more "chat-like"
 ## Load environment variables
+
 load_dotenv()
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, input_key='question',
+                                  output_key='answer')
 embedder = os.environ.get("EMBEDDINGS_MODEL_NAME", "all-MiniLM-L6-v2")
 persist_directory = os.environ.get('PERSIST_DIRECTORY', "db")
 model_path = os.environ.get('MODEL_PATH')
@@ -23,75 +27,53 @@ target_source_chunks = int(os.environ.get('TARGET_SOURCE_CHUNKS', 4))
 
 qa = None
 llm = None
-defaultprompt = """Use the following pieces of context to answer the question at the end. If you don't 
+default_prompt = """Use the following pieces of context to answer the question at the end. If you don't 
     know the answer, just say that you don't know, don't try to make up an answer.
 
 {context}
 
 Question: {question}
-Answer in Italian:"""
+Answer:"""
 
 
-def reset_init(prompt):
+def reset_init(in_prompt):
     global qa
     global llm
+    global memory
+    callbacks = [StreamingStdOutCallbackHandler()]
+    if not llm:
+        # added this so that llm won't be reloaded due to mlock, will need to change
+        llm = LlamaCpp(model_path=model_path, n_ctx=model_n_ctx, callbacks=callbacks, verbose=False, use_mlock=True)
     embeddings = HuggingFaceEmbeddings(model_name=embedder)
     # store text as vectors in chroma db
     vstore = Chroma(persist_directory=persist_directory, embedding_function=embeddings,
                     client_settings=CHROMA_SETTINGS)
-    callbacks = [StreamingStdOutCallbackHandler()]
-    # added this so that llm won't be reloaded due to mlock, will need to change
-    prompt_template = prompt
-    prompt_processed = PromptTemplate(
-        template=prompt_template, input_variables=["context", "question"]
-    )
-    chain_type_kwargs = {"prompt": prompt_processed}
-    if not llm:
-        llm = LlamaCpp(model_path=model_path, n_ctx=model_n_ctx, callbacks=callbacks, verbose=False, use_mlock=True)
+    chain_type_kwargs = {"prompt": PromptTemplate(
+        template=in_prompt, input_variables=["context", "question"]
+    )}
     retriever = vstore.as_retriever(search_kwargs={"k": target_source_chunks})
-    qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever,
-                                     chain_type_kwargs=chain_type_kwargs
-                                     , return_source_documents=True)
+    qa = ConversationalRetrievalChain.from_llm(llm=llm, chain_type="stuff", retriever=retriever,
+                                               combine_docs_chain_kwargs=chain_type_kwargs
+                                               , return_source_documents=True, memory=memory)
 
 
-def submit_prompt(qa, query):
-    ans = qa(query)
+def submit_prompt(qnsanswer, query):
+    ans = qnsanswer(query)
+
     return ans
 
 
-def query_llm(prompt, qns, chatbot: list = [],
-              history: list = []):
+def query_llm(in_prompt, qns, history: list = [],
+              ):
     ##update qa
-
+    reset_init(in_prompt)
     res = submit_prompt(qa, qns)
-    answer, documents = res['result'], res['source_documents']
+    answer, documents = res['answer'], res['source_documents']
     answer = f"Question: {qns}\n\nAnswer: {answer}\n\n"
     for doc in documents:
         answer += f"{doc.metadata['source']}:\n{doc.page_content}\n\n"
-    history.append(qns)
-    history.append(answer)
-    chatbot = [(history[i], history[i + 1]) for i in range(0, len(history), 2)]
-    return chatbot, history
-
-
-def clear_history(request: gr.Request):
-    state = None
-    return ([], state, "")
-
-
-# Moved inside queryllm function
-# def question_answer(inputs):
-#     try:
-#         ans, documents = query_llm(qa, inputs)
-#         res = f"Question: {inputs}\n\nAnswer: {ans}\n\n"
-#         # add similar docs to ans
-#         for doc in documents:
-#             res += f"{doc.metadata['source']}:\n{doc.page_content}\n\n"
-#         return res
-#
-#     except:
-#         print("error encountered")
-#         return "error"
+    history.append((qns, answer))
+    return "", history
 
 
 def ingest_now():
@@ -102,21 +84,18 @@ def ingest_now():
     stdout, stderr = process.communicate()
     # Print the output
     print(stdout.decode('utf-8'))
-    reset_init()
 
 
-reset_init()
+reset_init(default_prompt)
 
 with gr.Blocks() as ui:
-    prompt = gr.Textbox(value=defaultprompt
+    prompt = gr.Textbox(value=default_prompt
                         , show_label=False)
     gr.HTML("""<Text align="center">Private LLM</Text>""")
     chatbot = gr.Chatbot(elem_id="chatbot")
     question = gr.Textbox(placeholder="ask something", value="")
-    state = gr.State([])
-    clear = gr.Button(value="Clear history")
-    clear.click(clear_history, None, [chatbot, state, question])
-    question.submit(query_llm, [prompt, question, chatbot, state], [chatbot, state])
+    clear = gr.ClearButton([question, chatbot])
+    question.submit(query_llm, [prompt, question, chatbot], [question, chatbot])
 
 if __name__ == '__main__':
     ui.launch()
