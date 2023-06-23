@@ -36,6 +36,14 @@ Question: {question}
 Answer:"""
 
 
+def reset_db():
+    print("resetted db!")
+    embeddings = HuggingFaceEmbeddings(model_name=embedder)
+    vstore = Chroma(persist_directory=persist_directory, embedding_function=embeddings,
+                    client_settings=CHROMA_SETTINGS)
+    vstore.client.reset()
+
+
 def reset_init(in_prompt):
     global qa
     global llm
@@ -76,37 +84,46 @@ def query_llm(in_prompt, qns, history: list = [],
     return "", history
 
 
-def ingest_now():
+def ingest_now(temp_files):
     print("Processing docs....")
-    script_path = os.path.join(os.path.dirname(__file__), "ingest.py")
-    process = subprocess.Popen(['python', script_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    script_path = os.path.join(os.path.dirname(__file__), "ingest_with_UI.py")
+    # Get the paths of the temporary files
+    temp_file_paths = [temp_file.name for temp_file in temp_files]
+    print(temp_file_paths)
+    process = subprocess.Popen(['python', script_path] + temp_file_paths, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
     # Wait for the process to finish and get the output
     stdout, stderr = process.communicate()
     # Print the output
-    print(stdout.decode('utf-8'))
+    if process.returncode != 0:
+        print(f"An error occurred: {stderr.decode('utf-8')}")
+    else:
+        print(stdout.decode('utf-8'))
+    # Close the temporary files
+    for temp_file in temp_files:
+        temp_file.close()
 
 
-def upload_file(files):
-    file_paths = [file.name for file in files]
-    # SANITISE INPUTS HERE limit extensions to .txt .mp3 whatever
-    print(file_paths)
-    return file_paths
-
-
-with gr.Blocks() as ui:
+with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.green, secondary_hue=gr.themes.colors.emerald)) as ui:
     memory = gr.State(ConversationBufferMemory(memory_key="chat_history", return_messages=True, input_key='question',
                                                output_key='answer'))
-    prompt = gr.Textbox(value=default_prompt
-                        , show_label=False)
+
     gr.HTML("""<Text align="center">Private LLM</Text>""")
-    chatbot = gr.Chatbot(elem_id="chatbot")
-    question = gr.Textbox(placeholder="ask something", value="")
+    with gr.Row():
+        chatbot = gr.Chatbot(elem_id="chatbot")
+    with gr.Row():
+        prompt = gr.Textbox(value=default_prompt
+                            , show_label=True, label="Prompt, change this to change the prompt fed to the chatbot, must contain {context} and {question}")
+        question = gr.Textbox(placeholder="ask something", value="", label="Question for chatbot")
     file_output = gr.File(file_count="multiple", type="file", interactive=True,
-                          file_types=['.csv', '.txt', 'pdf', 'docx'])
-    clear = gr.ClearButton([question, chatbot, memory,file_output])
+                          file_types=['.csv', '.txt', 'pdf', 'docx', '.pdf'])
+    with gr.Row():
+        clear = gr.ClearButton([question, chatbot, memory, file_output])
+        ingest_docs = gr.Button(value="ingest documents")
+        resetButton = gr.Button(value="reset db")
     question.submit(query_llm, [prompt, question, chatbot], [question, chatbot])
-    ingest_docs = gr.Button(value="ingest documents")
     ingest_docs.click(ingest_now, file_output)
+    resetButton.click(reset_db, None)
 
 if __name__ == '__main__':
     ui.launch()
