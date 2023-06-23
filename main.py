@@ -16,8 +16,8 @@ from langchain.memory import ConversationBufferMemory
 ## Load environment variables
 
 load_dotenv()
-memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, input_key='question',
-                                  output_key='answer')
+# memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, input_key='question',
+#                                   output_key='answer')
 embedder = os.environ.get("EMBEDDINGS_MODEL_NAME", "all-MiniLM-L6-v2")
 persist_directory = os.environ.get('PERSIST_DIRECTORY', "db")
 model_path = os.environ.get('MODEL_PATH')
@@ -54,7 +54,7 @@ def reset_init(in_prompt):
     retriever = vstore.as_retriever(search_kwargs={"k": target_source_chunks})
     qa = ConversationalRetrievalChain.from_llm(llm=llm, chain_type="stuff", retriever=retriever,
                                                combine_docs_chain_kwargs=chain_type_kwargs
-                                               , return_source_documents=True, memory=memory)
+                                               , return_source_documents=True, memory=memory.value)
 
 
 def submit_prompt(qnsanswer, query):
@@ -86,16 +86,27 @@ def ingest_now():
     print(stdout.decode('utf-8'))
 
 
-reset_init(default_prompt)
+def upload_file(files):
+    file_paths = [file.name for file in files]
+    # SANITISE INPUTS HERE limit extensions to .txt .mp3 whatever
+    print(file_paths)
+    return file_paths
+
 
 with gr.Blocks() as ui:
+    memory = gr.State(ConversationBufferMemory(memory_key="chat_history", return_messages=True, input_key='question',
+                                               output_key='answer'))
     prompt = gr.Textbox(value=default_prompt
                         , show_label=False)
     gr.HTML("""<Text align="center">Private LLM</Text>""")
     chatbot = gr.Chatbot(elem_id="chatbot")
     question = gr.Textbox(placeholder="ask something", value="")
-    clear = gr.ClearButton([question, chatbot])
+    file_output = gr.File(file_count="multiple", type="file", interactive=True,
+                          file_types=['.csv', '.txt', 'pdf', 'docx'])
+    clear = gr.ClearButton([question, chatbot, memory,file_output])
     question.submit(query_llm, [prompt, question, chatbot], [question, chatbot])
+    ingest_docs = gr.Button(value="ingest documents")
+    ingest_docs.click(ingest_now, file_output)
 
 if __name__ == '__main__':
     ui.launch()

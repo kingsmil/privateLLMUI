@@ -1,791 +1,221 @@
-Large pretrained language models have been
-performing increasingly well in a variety of
-downstream tasks via prompting. However, it
-remains unclear from where the model learns
-the task-specific knowledge, especially in a
-zero-shot setup. In this work, we want to find
-evidence of the model’s task-specific competence from pretraining and are specifically interested in locating a very small subset of pretraining data that directly supports the model
-in the task. We call such a subset supporting data evidence and propose a novel method
-ORCA to effectively identify it, by iteratively
-using gradient information related to the downstream task. This supporting data evidence
-offers interesting insights about the prompted
-language models: in the tasks of sentiment
-analysis and textual entailment, BERT shows
-a substantial reliance on BookCorpus, the
-smaller corpus of BERT’s two pretraining corpora, as well as on pretraining examples that
-mask out synonyms to the task verbalizers.1
-1 Introduction
-Contemporary large language models (LLMs) are
-trained on massive text corpora from the web, referred to as the pretraining data (e.g., Devlin et al.,
-2019; Raffel et al., 2020). Due to their volume,
-these data typically cannot be inspected manually
-and are prone to spelling or logic errors, biases,
-irrelevance to downstream tasks, and other artifacts
-(Bender et al., 2021). Yet, LLMs pretrained with
-such noisy data attain good performance on numerous downstream tasks, with little or no task-specific
-tuning (Petroni et al., 2019; Brown et al., 2020).
-There are a number of hypotheses explaining the
-power of pretrained LLMs. For example, one can
-postulate that the pretraining data is huge and the
-model might be shallowly memorizing patterns in
-1Code will be available at https://github.com/
-xhan77/orca.
-data (Bender et al., 2021; Carlini et al., 2021). Alternatively, the LLMs might be learning to reason
-through observed patterns in the pretraining data in
-novel ways (McCoy et al., 2021). However, what
-exact pattern is memorized or reasoned through,
-especially in an arbitrary downstream task, is not
-very clear—the evidence of these conjectures remains underexplored. Such evidence is useful as
-it may facilitate the trustworthiness of the models
-(Lipton, 2018). Moreover, it can surface problematic patterns in data or model behavior and can
-aid researchers to improve the model (Zhong et al.,
-2019; Han and Tsvetkov, 2021).
-In this work, we develop a methodology to provide such evidence. Our hypothesis is that among
-the enormous pretraining corpora, there is a subset
-of pretraining data that influences the model’s behavior on a downstream task more than the rest of
-the pretraining data. Therefore, our task is to locate
-a task-specific evidence set—a very small amount
-of pretraining data that particularly impacts the
-model’s performance on the task. We can interpret
-a model by inspecting such evidence sets—whether
-they contain task-relevant patterns compared to the
-rest of the corpora.
-This approach to model interpretability is different from and complementary to prior research
-that locates important tokens or spans in the model
-inputs (Ribeiro et al., 2016; Lundberg and Lee,
-2017). Sometimes information relevant to explaining the model’s decision may not be present in the
-inference-time input. For example, in zero-shot
-open-domain question answering (Petroni et al.,
-2019), the answer to a question is not within the
-input text.
-A related line of research focuses on instance
-attribution (Koh and Liang, 2017; Yeh et al., 2018;
-Pruthi et al., 2020; Han et al., 2020), where the
-goal is to find which training examples are most
-influential to the model’s decision on a single test
-example. However, in this work we are interested
-arXiv:2205.12600v1 [cs.CL] 25 May 2022
-in locating pretraining data influencing the whole
-task (a test set). We seek such “global” evidence
-for the task because given the scale of the pretraining and task data, it could be inefficient or even
-infeasible to find and inspect the evidence for each
-of the task examples.2
-We first formulate our problem of finding evidence from pretraining data by defining an incremental impact of the evidence (§2). We propose
-a novel method ORCA3
-that effectively identifies
-the evidence by iteratively using task-specific gradient information (§3). We focus on two classification tasks, sentiment analysis and textual entailment, in a prompt-based setup (§4). We show
-the effectiveness of the evidence set discovered by
-ORCA, compared with random data subsets and
-nearest neighboring data in an embedding space
-(§5). Our analyses into the discovered evidence
-show that our experimented model BERT (Devlin
-et al., 2019) has an interestingly high reliance on
-one of its two pretraining corpora (BookCorpus,
-Zhu et al., 2015) as well as on pretraining examples that mask out synonyms to the task verbalizers
-(Schick and Schütze, 2021) (§6).
-2 Problem Formulation
-Large pretrained language models have been performing increasingly well in a collection of downstream tasks under few-shot or even zero-shot setups (Petroni et al., 2019; Brown et al., 2020). Void
-of the conventional finetuning, they must have directly learned some useful knowledge from the pretraining. However, the pretraining data is seldom
-curated, instead sourced from mixed domains and
-prone to noise. It remains a gap to identify what
-exact pretraining data (if any) lead to a model’s
-competence in a specific downstream task. Finding such pretraining data for a given model and
-task, which we call supporting data evidence, is
-the objective of this work.
-Let us assume we have a pretrained language
-model θ
-PT that uses a pretraining dataset DPT 3
-(x
-PT
-context, xPT
-masked). For example, for an autoencoding language model (e.g., Devlin et al., 2019),
-x
-PT
-context can be a block of text with certain tokens
-masked, and x
-PT
-masked can be those tokens in their
-original forms, waiting to be reconstructed. For
-an autoregressive language model (e.g., Radford
-2Directly applying instance attribution methods to the task
-level may also yield negative results (Kocijan and Bowman).
-3Named after the marine mammal for nO paRtiCular
-reAson.
-et al., 2018), x
-PT
-context can be a preceding observed
-context, and x
-PT
-masked can be the next token to be
-predicted. A language model θ
-PT is trained to
-minimize a loss L over the pretraining examples,
-θ
-PT = argminθ L(DPT; θ).
-The language model can be applied to many
-downstream tasks without finetuning any specific
-modules, via prompting (Schick and Schütze, 2021;
-Liu et al., 2021). Let us assume we have a
-dataset of a downstream task for evaluation purposes, Dtask 3 (x
-task, ytask). The language model
-could make decisions for the task by measuring
-pθ(verbalizer(y
-task) | template(x
-task)). The template supplies a prompt tailored to the task for the
-model, and the verbalizer maps the output of the
-language model to the task’s label space.4
-Our goal is to find the supporting data evidence
-S for the task Dtask. This evidence should be a set
-of examples within the pretraining data (S ⊂ DPT),
-and we want the size of the set to be very small to
-give us clearer signals to interpret (|S|  |DPT|).
-The supporting data evidence S should “contribute”
-significantly to the performance of the model on
-the downstream task.
-However, we first observe that defining this contribution is already a non-trivial problem. Prior
-work in instance attribution like influence functions
-(Koh and Liang, 2017) often adopt a “leave-oneout” perspective (Cook, 1977). In our case this
-would mean removing S from DPT, retraining a
-new language model from scratch, and testing it on
-Dtask. This is prohibitively expensive.5
-In this work, we adopt an “upweight” perspective. We want to upweight certain pretraining examples (e.g., S) by letting the model see them more
-times (instead of less times in leave-one-out). To
-avoid retraining the whole language model, we append the selected pretraining examples S to the
-end of the existing pretraining procedure, letting
-the model see and update upon them one more time.
-We want to keep such additional updates as minimal as possible to prevent overfitting. Specifically,
-if we randomly batch the supporting data evidence
-S to mini-batches, we can get a “boosted” model
-via a very small number of optimizer updates:
-θ
-PT
-boosted ← θ
-PT + updatesθ,L(batched(S))
-4Our tasks are classification problems in this work, but the
-framework should be extendable to generation problems as
-well.
-5Moreover, the definition of influence functions and even
-leave-one-out can sometimes be arguable, especially in deep
-non-convex models (Basu et al., 2021; K and Søgaard, 2021).
-F
-We may want to select S in several iterations
-rather than at once, as a potential continued
-pretraining with Dtask would also be iterative
-(gradient descent).
-Suppose we want to build our supporting data
-evidence S in m iterations, S1, S2, . . . , Sm; the
-size of the subset at each iteration is |S|
-m
-. Below,
-we first find examples for the first evidence subset
-S1. We know that continuing pretraining on the
-task data Dtask directly would likely improve the
-original model θ
-PT on the task. If we put all task
-data into a batch and calculate a batch gradient
-∇θLtask(Dtask; θ
-PT),
-7 descending along the gradient direction should improve θ
-PT. Therefore, here
-we aim to find a subset S1 of the pretraining data
-that can exert a similar gradient of the model as
-∇θLtask(Dtask; θ
-PT):
-S1 = {d ∈ DPT | cos(∇θLLM(d, θPT),
-∇θLtask(Dtask; θ
-PT)) > δ1}
-We measure a cosine similarity between gradients
-and use δ1 as a dynamic threshold for selecting |S1|
-elements.8
-Now with the first data evidence subset S1, we
-can continue pretraining an intermediate model
-θ
-PT
-1
-:
-θ
-PT
-1 ← θ
-PT + updatesθ
-(batched(S1))
-The procedure to find the rest of the data evidence subset Si with i = 2, 3, . . . , m is similar to
-the above but with one difference: these subsets
-should be beneficial to the model in a way that is
-not already captured by S1.
-We know that the intermediate model θ
-PT
-1
-should
-capture information about S1. Therefore, for
-later iterations we calculate a task batch gradient based on the previous intermediate model,
-∇θLtask(Dtask; θ
-PT
-i−1
-). The data evidence subset at
-each iteration should again exert a similar gradient:
-Si = {d ∈ DPT | cos(∇θLLM(d, θPT
-bi−1c
-),
-∇θLtask(Dtask; θ
-PT
-i−1
-)) > δi}
-with δi as a dynamic threshold for selecting |Si
-|
-elements. The bi − 1c is a design choice that can
-7The task loss over a single task example can
-be Ltask(x
-task, ytask) = − log pθ(verbalizer(y
-task) |
-template(x
-task)).
-8The language model loss over a single pretraining example can be LLM(x
-PT
-context, xPT
-masked) = − log pθ(x
-PT
-masked | x
-PT
-context).
-allow for a “lagged” model (i.e., are we computing
-the gradient of the LM loss w.r.t. the immediate
-previous intermediate model or the model several
-iterations before?). This lagging may be helpful
-to the method’s stability. For the experiments in
-this work, θ
-PT
-bi−1c
-is by default θ
-PT, for a maximum
-lagging; θ
-PT
-bi−1c
-is θ
-PT
-i−1
-in cases denoted by NL (no
-lagging).
-At each iteration, having a total of i data evidence subsets, we continue pretraining an intermediate model θ
-PT
-i
-:
-θ
-PT
-i ← θ
-PT + updatesθ
-(batched(∪
-i
-j=1Sj ))
-It is worth noting that for every iteration, we continue pretraining over the original language model,
-and the data evidence subsets are unordered.
-After the m-th iteration, we complete building
-our full supporting data evidence S = ∪
-m
-j=1Sj .
-The resulting intermediate model θ
-PT
-m is essentially
-the “boosted” model of our interest, i.e., θ
-PT
-boosted
-introduced in §2. Figure 1 summarizes our method.
-Limitation Is ORCA guaranteed to find the
-global optimal supporting data evidence out of the
-|DPT|
-|S|
-
-candidates? No. However, it can still be
-useful: we will show our method’s comparative
-advantage on Q(S) over some baseline methods in
-§5.
-4 Experimental Setup
-4.1 Baseline methods
-Random sampling We simply sample at random
-|S| examples from DPT as the supporting data evidence.
-Embedding nearest neighbors Enhancing language models using examples with nearest neighboring embeddings is a common approach in domain adaptation of LMs and kNN-LMs (Gururangan et al., 2020; Khandelwal et al., 2020). We want
-to find nearest neighboring pretraining examples to
-the task examples. We define a similarity score as
-below:
-cos(hmasked(ˆx
-PT
-context), hverbalizer(template(ˆx
-task)))
-• hmasked is the last hidden representation at the
-position of the masked pretraining token.
-• hverbalizer is the last hidden representation at
-the position of the task verbalizer token
-• xˆ
-PT
-context is the pretraining input to the model
-but containing the ground truth masked token.
-• template(ˆx
-task) is the templated task input but
-supplying the ground truth verbalized label.
-We use the ground truth information here for a fair
-comparison with our method ORCA, where the
-calculation of gradients involves the ground truth
-information as well.
-Practically, since |Dtask| can be large and well
-over |S|, we first sample t examples from Dtask
-.
-Then, for each of the t sampled task examples, we
-find the top-k nearest neighboring pretraining examples in DPT. Finally, from the pool of the t · k
-pretraining examples, we sample |S| of them as the
-supporting data evidence. We additionally have a
-hyperparameter max-r controlling the maximum
-allowed data repetitions in the selected data evidence.
-ORCA with embeddings We use the gradient information cos(∇θLLM(.), ∇θLtask(.)) when
-collecting the supporting data evidence subsets in ORCA. We want to know whether we
-can substitute the gradients with hidden representations. Reusing the notations in the embedding nearest neighbors baseline, we use
-cos(hmasked(.),
-1
-|Dtask|
-P
-xtask hverbalizer(.)) for all the
-gradient cosine operations in ORCA. Note that we
-use the average embeddings of all task examples
-to replace the batch gradient over all task examples. Our other design decisions of ORCA remain
-unchanged.
-4.2 Language model and downstream tasks
-BERT In this work, the language model θ
-PT we
-use is BERT-large (Devlin et al., 2019). We choose
-it primarily due to the limited computing resources
-we have—BERT is small both in terms of the number of model parameters and the size of the original
-pretraining data. Our problem formulation and
-method are extendable to other language models as
-well.
-IMDB We primarily experiment with two text
-classification tasks, sentiment analysis and textual
-entailment. For sentiment analysis, we use the
-IMDB movie review dataset (Maas et al., 2011).
-The task data Dtask here is the IMDB test split
-containing 25,000 examples. The template for
-the IMDB examples is “It was [MASK]. <REVIEW>”. The verbalizer maps the reconstruction of
-the [MASK] token to the label space, {“good” →
-positive, “bad” → negative}.
-MNLI For the textual entailment task, we use
-the MNLI dataset (Williams et al., 2018). The
-task data Dtask here is the MNLI matched validation split containing 9,815 examples. The template for the MNLI examples is “<PREMISE>
-[MASK], <HYPOTHESIS>”. The verbalizer maps
-the reconstruction of the [MASK] token to the
-label space, {“yes” → entailment, “no” →
-contradiction, “maybe” → neutral}. We use
-the OpenPrompt library (Ding et al., 2022) to
-prompt the BERT model with the templates and
-verbalizers inherited from Gao et al. (2021b).
-Zero-shot transfer and prompt tuning When
-we formulate our problem, we are interested in
-the evidence in pretraining that directly impact the
-pretrained model’s performance on the downstream
-task—a zero-shot transfer scenario. There is no
-notion of finetuning with the in-task training data.
-However, research in prompt tuning (e.g., Lester
-et al., 2021) sometimes folds the usage of in-task
-training data into the template for the task. They
-add a sequence of soft embeddings to the beginning
-of the template and train the embeddings with the
-in-task training data. The language model in this
-case is mostly untouched, except that the first input
-word embedding layer is bypassed. Apart from
-our main experiments with the zero-shot transfer
-model, as additional experiments we consider such
-prompt tuning scenarios, finding pretraining data
-evidence useful for the task when the template is
-enhanced with some in-task training data.9
-4.3 Pretraining data
-Source BERT uses the English Wikipedia and
-BookCorpus (Zhu et al., 2015) as its pretraining
-data. During pretraining, 15% of the tokens are
-randomly masked out to be reconstructed. Though
-BERT’s pretraining data is already small compared
-to those of many other language models (e.g., Raffel et al., 2020; Gao et al., 2021a), we unfortunately
-still do not have the resource to process the full
-dataset. In fact, in this work we only randomly
-sample 0.5% of the full pretraining data.
-Format During pretraining, BERT would reconstruct the masked 15% tokens in a sequence in
-9Depending on the zero-shot performance of the model on
-the task, we use different amounts of in-task training data for
-prompt tuning. For IMDB, we use 100 examples per class,
-whereas for MNLI, we use 10,000 examples per class.
-parallel (i.e., the reconstruction loss for each token is independent). From the training perspective, this is efficient. However, this work aims
-to find the supporting data evidence. We particularly want to know learning the reconstruction of
-which token could most impact the downstream
-task performance. Therefore, we expand each pretraining data and treat each masked token as a standalone example. More specifically in our setup,
-DPT 3 (x
-PT
-context, xPT
-masked). x
-PT
-context is a sequence of
-512 tokens, and x
-PT
-masked is a single masked token
-in the sequence. Together this makes |DPT| =
-3,924,635 (with 52,640 unique x
-PT
-context sequences).
-We choose at most 2,000 instances from DPT as
-the supporting data evidence S.
-4.4 Hyperparameters
-ORCA finds S in iterations. In this work we use
-m=20 iterations, with each iteration finding 100
-examples from DPT (|S|=2000).10
-For the embedding kNN baseline, we sample
-t=1000 task examples and choose k={10, 20, 50,
-100} most similar pretraining data. Within the t ·
-k candidate pool, we sample |S|=2000 examples,
-with a max number of repetitions r={1, 20, 2000}.
-During the continued pretraining for all methods,
-we use a batch size of 16, resulting in at most
-125 optimizer updates from the original language
-model. The learning rate is set at one of BERT’s
-default values 2e-5.
-5 Evaluation
-We evaluate the supporting data evidence S, identified using ORCA and the baselines, by quantifying
-the supportiveness of S. To objectively measure
-this supportiveness, we measure Q(S) as defined
-in §2. Note that this section does not focus on
-whether or not the discovered data evidence is plausible to humans. We will explore what humans can
-interpret from the actual data evidence in §6.
-Table 1 shows our main results: the performance
-of our zero-shot language model pretrained additionally on S, as identified by different methods.
-We first notice that the performance of our original
-model is lower on MNLI than on IMDB (normalized by the number of classes). This could suggest
-that the entailment task is intrinsically harder for
-models that have only been trained on pretraining data. We observe a moderate performance
-10Since we only work with 0.5% of the pretraining data, in
-our actual experiments we do replacement across the 20 iterations (i.e., an example at maximum could appear 20 times).
-On zero-shot model IMDB MNLI
-Null 73.50 43.70
-Random 71.25 42.56
-Embedding kNN 76.55 45.15
-ORCA w/embeddings 75.11 43.74
-ORCA (NL) 84.51 45.46
-0 < |S| ≤ 500 79.81 44.85
-500 < |S| ≤ 1000 83.87 45.64
-1000 < |S| ≤ 1500 84.40 46.10
-1500 < |S| ≤ 2000 85.17 46.49
-ORCA 84.33 46.06
-0 < |S| ≤ 500 81.60 45.99
-500 < |S| ≤ 1000 83.23 45.75
-1000 < |S| ≤ 1500 84.42 46.40
-1500 < |S| ≤ 2000 85.15 46.26
-Table 1: Main results (accuracy) of ORCA and baselines on the zero-shot model. Numbers in regular fonts
-are averaged from 5 random seeds, while numbers in
-small fonts show a trajectory of performance with one
-seed.
-improvement using the embedding nearest neighbors method and the embedding version of ORCA.
-The best performance is achieved by our proposed
-method ORCA, especially in the task of IMDB by
-a large margin.
-Table 2 shows some additional results on the effect of the supporting data evidence S on a prompttuned model. These results show that, compared to
-the zero-shot model, a prompt-tuned model is more
-difficult to improve since the prompt may already
-be highly specialized towards the task, using the
-in-task training data. The additional signals in the
-pretraining data that are useful to the task can be
-scarce. That said, the pretraining data S identified
-by ORCA still improves the model on IMDB.
-6 Analysis
-While useful in showing the effectiveness of the
-supporting data evidence S, evaluations in §5 do
-not provide us with tangible insights about the
-model itself. In this section, we analyze some properties of S, and see whether they reflect humans’
-expectations for the model. We first show a few
-qualitative examples of the evidence discovered by
-ORCA in Table 3.
-On prompt-tuned model IMDB MNLI
-Null 87.83 70.19
-Random 86.06 69.07
-Embedding kNN 86.53 68.93
-ORCA w/embeddings 87.80 68.45
-ORCA (NL) 87.65 68.79
-ORCA 88.10 68.61
-Table 2: Additional results (accuracy) of ORCA and
-the baselines on the prompt-tuned model. All the numbers are averaged from 5 random seeds.
-Which source corpus does the supporting data
-evidence come from? The pretraining data of
-BERT consist of the English Wikipedia and BookCorpus. We show the source corpus of examples
-in S in Figure 2 and Figure 3.
-We find that though the pretraining set consists
-of considerably more data from Wikipedia than
-from BookCorpus (76.5% vs. 23.5%), the supporting data evidence identified by ORCA has a
-drastically different source corpus distribution. In
-IMDB, 64.1% and 92.6% of the examples in S
-come from BookCorpus, using the default ORCA
-and its no-lagging variant respectively. The demotion of Wikipedia examples in the sentiment analysis task is somewhat reasonable, since Wikipedia
-is meant to have a neutral point of view (NPOV).11
-On the other hand, BookCorpus consists of novels
-that could involve strong emotions and sentiments.
-A similar trend can be found in MNLI as well,
-with 99.0% and 92.9% of the examples in S coming
-from BookCorpus, using the default and NL variant
-of ORCA. We conjecture that the over-reliance on
-BookCorpus in MNLI could be due to the selection of the colloquial verbalizer words (e.g., “yes”,
-“maybe”), which can be scarce in Wikipedia. Also,
-the BookCorpus data could contain more everyday
-topics that that match MNLI’s genres (e.g., fiction,
-letters, telephone speech). However, whether it is
-reasonable for the model to rely on BookCorpus for
-textual entailment is arguable: Wikipedia should
-be a more reliable source if we want the model to
-build more upon factual information.
-What are the masked tokens in the supporting
-data evidence? Prompted language models use a
-11https://en.wikipedia.org/wiki/
-Wikipedia:Neutral_point_of_view
-All PT data
-Embedding kNN
-ORCA (NL)
-ORCA
-0 0.25 0.5 0.75 1
-Wikipedia BookCorpus
-Figure 2: Source corpus distribution of the supporting
-data evidence in IMDB.
-All PT data
-Embedding kNN
-ORCA (NL)
-ORCA
-0 0.25 0.5 0.75 1
-Wikipedia BookCorpus
-Figure 3: Source corpus distribution of the supporting
-data evidence in MNLI.
-verbalizer to adapt to the downstream task. For example, outputting “good” for a templated IMDB input indicates a positive sentiment, “yes” for MNLI
-indicates entailment, etc. For a pretraining example that supports the task, are there any relations
-between its masked, to-be-reconstructed pretraining token (x
-PT
-masked) and the verbalizer words for the
-task (verbalizer(y
-task))? In Table 4 and Table 5, we
-show the 10 most frequent masked words (types)
-in S, for each method in IMDB and MNLI.
-We observe that the verbalizer words, in their
-original forms, are always the most common
-masked token in S. For all of the methods in both
-tasks, over 50% of the masked tokens are exactly
-the verbalizer words. Though we observe some
-noise in x
-PT
-masked (e.g., symbols that carry no taskrelevant meaning), most of the other masked tokens
-are synonyms to the verbalizer words in IMDB. In
-MNLI, the other masked tokens may capture relations between clauses similar to the verbalizer
-words (e.g., then, to, probably). Overall, we find
-that x
-PT
-masked in the discovered S is reasonable for
-the sentiment analysis and textual entailment task.
-IMDB ... we have to think that were awfully lucky as human beings to have the nice precise system. the sloppy
-system is probably good enough for bacteria. it turns out – much to geneticists surprise – that lowly bacteria
-store genes as whole units (weasel) ...
-it was the only place she could afford. her meager earnings didnt provide much in the ways of clean, modern
-style along with the privacy she required. she felt better if she thought about how bad it could be. a year ago,
-shed lived with her mother. anywhere was better than living with her ...
-MNLI ... he then cut the cord that bound her hands and legs. are you ok to walk? he asked hoping the answer was
-yes. i think so. but im quite stiff, she said. he helped her up. stretch your legs a little. theyll feel better ...
-... there was no way to hide the shock on her face, and she knew he saw it by his sigh. “do you think yourself
-less than me?” “no!” she absolutely didn’t but ... he nodded his head. “i see. you thought i would think you
-were less than me.” she was ashamed. “i’m sorry.” ...
-... he shook his head, incredulous. in fact, he looked like he was considering throttling me. “you’re just not
-getting it. maybe that’s my fault. maybe it’s because i don’t tell you i love you often enough. baby, you’re
-the only ‘good’ thing that i’ve ever had ...
-Table 3: Examples of the supporting data evidence (S) discovered by ORCA for IMDB and MNLI. The masked
-token (x
-PT
-masked) in each example is underlined. The example evidence for IMDB expresses sentiments, while it is
-less clear whether the example evidence for MNLI is related to entailment.
-Method Most frequent x
-PT
-masked in S
-Embedding
-kNN
-bad, good, terrible, great, badly,
-excellent, worst, negative, better,
-disappointment, ... [11 distinct tokens in total, 94.8% verbalizer words]
-ORCA (NL) bad, good, worst, n, worse, ’,
-wrong, -, horrible, poisonous, ...
-[91 distinct tokens in total, 90.0% verbalizer words]
-ORCA bad, good, `, horrible, not,
-worse, ugly, hated, poor, terrible,
-... [285 distinct tokens in total, 55.9%
-verbalizer words]
-Table 4: Masked tokens (x
-PT
-masked) in the supporting data
-evidence of IMDB.
-Is the context of the supporting data evidence
-similar to the task input data? We are interested in the relationship between the context of the
-selected pretraining data (x
-PT
-context) and the input of
-the downstream task (x
-task). Are they exceptionally
-similar, indicating that the model may be memorizing shallow patterns? Alternatively, are they considerably different, indicating that the model needs
-to transfer some learnt knowledge from pretraining
-to the task (either in a reasonable or spurious way)?
-Method Most frequent x
-PT
-masked in S
-Embedding
-kNN
-no, yes, maybe, `, yeah, However, perhaps, n, ), No, ... [258
-distinct tokens in total, 58.3% verbalizer words]
-ORCA (NL) maybe, yes, no, `, n, that, -, then,
-perhaps, the, ... [176 distinct tokens
-in total, 69.1% verbalizer words]
-ORCA maybe, yes, no, `, perhaps, to,
-probably, has, in, big, ... [125 distinct tokens in total, 59.4% verbalizer
-words]
-Table 5: Masked tokens (x
-PT
-masked) in the supporting data
-evidence of MNLI.
-Our exploratory step uses an automatic metric between two distributions of texts, MAUVE (Pillutla
-et al., 2021), to measure the similarity between our
-sets of x
-PT
-context and x
-task. As a method based on
-quantized language model embeddings, MAUVE
-similarity may capture text attributes such as topics
-and style.12
-Apart from using all 512 tokens in the context
-12Grammaticality can be another attribute as Pillutla et al.
-(2021) work with machine-generated texts. This is less relevant in our case as our sets of texts are naturally occurring.
-Context window size of supporting data evidence
-MAUVE with task data
-0.50
-0.52
-0.54
-0.56
-c=20 c=50 c=100 c=200 c=512
-Random Embedding kNN ORCA (NL) ORCA
-Figure 4: MAUVE similarity on IMDB, between the
-sets of x
-PT
-context in S and x
-task
-.
-of the data evidence (x
-PT
-context), we also truncate the
-context, keeping the surrounding c tokens of the
-masked token (x
-PT
-masked). We want to control for the
-scope of the context by varying c. For x
-task, we
-randomly sample 2000 examples to match the size
-of S. Figure 4 and Figure 5 show the results on
-IMDB and MNLI.
-We observe that the MAUVE scores between
-x
-PT
-context and x
-task are all between 0.512 and 0.577.
-In contrast, the MAUVE score between the training set of the task and the test set (x
-task) is 0.998
-and 0.997 for IMDB and MNLI respectively. This
-substantial difference in MAUVE scores may indicate a disparity in topics and style between the
-context of the pretraining evidence and the task
-data. Additionally, the MAUVE score of our selected supporting data evidence is not higher than
-a random sample in most cases. This further shows
-that the signal in the evidence context useful for
-the task is subtle, in a way that MAUVE cannot
-capture. While not within the scope of this paper,
-future investigation can also extend the analysis
-of the supporting evidence with feature attribution
-methods (Pezeshkpour et al., 2022) or a human
-evaluation with domain experts of the task.
-7 Related Work
-LLMs have been showing competence in various
-downstream tasks in NLP with little to no taskspecific tuning, using prompts (Petroni et al., 2019;
-Brown et al., 2020; Schick and Schütze, 2021; Gao
-et al., 2021b; Lester et al., 2021). We are especially
-interested in interpreting LLMs under a zero-shot
-setup, where the knowledge relevant to the downstream task must come from the noisy pretraining
-Context window size of supporting data evidence
-MAUVE with task data
-0.50
-0.52
-0.54
-0.56
-0.58
-c=20 c=50 c=100 c=200 c=512
-Random Embedding kNN ORCA (NL) ORCA
-Figure 5: MAUVE similarity on MNLI, between the
-sets of x
-PT
-context in S and x
-task
-.
-data.13
-One common interpretability method for NLP
-models is feature attribution, where important
-tokens or spans in the inference-time input are
-highlighted, indicating their contributions to the
-model’s decision (Simonyan et al., 2014; Li et al.,
-2016; Ribeiro et al., 2016; Lundberg and Lee,
-2017). Another type of interpretation that aligns
-more with our focus is instance attribution, where
-important training examples are highlighted for
-their influence on the model (Koh and Liang, 2017;
-Yeh et al., 2018; Pruthi et al., 2020; Han et al., 2020;
-Guo et al., 2021). In this work, we are instead interested in the influence of pretraining data and in
-finding supporting data evidence for the entire task
-rather than individual test examples.14 There has
-also been prior work analyzing what amount of
-data is needed during pretraining to achieve models
-with certain capabilities (Zhang et al., 2021), but
-these works do not attribute model performance to
-specific pretraining data.
-Our proposed method to find the data evidence,
-ORCA, shares a similar intuition with prior work
-that reweighs training data (Wang et al., 2020), as
-both methods use the gradient information of the
-test data. However, their target model depends on
-an ordered sequence of data weights and model
-checkpoints. In contrast, we apply an unordered
-data evidence set to the original model, mimicking
-an upweighting in pretraining. The root of the dif13Interpreting the role of pretraining data in an unprompted,
-finetuning setup can be intrinsically harder, but prior work like
-Chen et al. (2020) have made attempts.
-14A recent concurrent work by Akyürek et al. (2022) builds
-a candidate set for fact-tracing in question answering; the
-difference is the use of task-related training examples instead
-of pretraining data, and the evaluation with an information
-retrieval objective.
-ference is the purpose: the former is performanceoriented while the latter is interpretability-oriented.
-Another related line of work in machine learning is coreset construction (Coleman et al., 2020;
-Mirzasoleiman et al., 2020; Huang et al., 2021).
-Their focus is typically an empirical risk minimization problem on the training data, without a notion
-of downstream tasks. They aim to create a substitution set for the full training data for an efficiency
-purpose.
-8 Conclusion
-The competence of zero-shot or few-shot prompted
-language models on various downstream tasks is
-mysterious. The models should be gaining taskspecific knowledge from the pretraining data, but
-what pretraining data leads to the capability of the
-models is an underexplored area of research. In this
-work, we formulate the problem of finding supporting data evidence in the pretraining data of LLMs
-for downstream tasks. We propose ORCA to effectively identify such evidence with an iterative guide
-from task-specific gradient information. Further
-analyses into the evidence show that a prompted
-BERT on sentiment analysis and textual entailment
-relies heavily on the BookCorpus data, as well as
-on pretraining examples that mask out task verbalizers and their synonyms.
-There remain several gaps to be addressed by
-future work. For example, the definition of the
-data evidence quality can be more theoretically
-grounded (we discussed a few alternatives in §2).
-Our proposed method ORCA is slow and currently
-operates on a small amount of pretraining data,
-since it computes a per-sample gradient for each
-example in the corpus. We did not explore many potential design choices of the method (e.g., warmup
-selections, annealing mechanisms). Finally, while
-our analysis into the identified supporting data evidence successfully captures high-level signals in
-the pretraining data (e.g., source corpus, masked
-token, whole context), this can be complemented
-with more detailed interpretations (e.g., what exact
-spans in the supporting data evidence contribute to
-their supportiveness).
+Helping more middle-income earners save more with CPF
+1. Increase in CPF monthly salary ceiling
+As salaries in Singapore continue to rise, the maximum amount of monthly wages eligible for CPF contributions (also known as the CPF monthly salary ceiling) is periodically reviewed to help members in increasing their CPF savings. This monthly wage ceiling is currently set at $6,000.
+
+
+
+From 2023 to 2026, the CPF monthly salary ceiling will be progressively increased to $8,000. It is important to note that the changes will be implemented in four gradual steps, which gives both employers and employees time to adjust to the new regulations. The CPF annual salary ceiling of $102,000 remains unchanged.
+
+ 	CPF monthly salary ceiling 	CPF annual salary ceiling
+Current 	$6,000	$102,000
+From 1 September 2023 	$6,300 (+$300)
+From 1 January 2024	$6,800 (+$500)
+From 1 January 2025 	$7,400 (+$600)
+From 1 January 2026 	$8,000 (+$600)
+HOW THIS BENEFITS YOU:
+Starting from 1 September 2023, if your current monthly salary exceeds $6,000, you will receive more CPF contributions because of the increased limit. This means that a greater proportion of your salary will be allocated towards your CPF savings.
+
+
+
+Additionally, your employer will also be required to contribute on a higher amount - resulting in more CPF savings for your retirement needs.
+
+
+
+While the increased monthly salary ceiling may result in a lower take-home pay, this allows more middle income CPF members to save more with CPF and help with their future needs.
+
+More support for seniors
+2. Increased CPF contribution rates for senior workers (55 to 70)
+Employee's age (years) 	CPF Contribution Rates from 1 January 2024
+Current Total (% of wage)	Total (% of wage)	By employer (% of wage)	By employee (% of wage)
+55 and below 	37
+(No change)	37
+(No change)	17
+(No change)	20
+(No change)
+Above 55 to 60 	29.5	31
+(+1.5)	15
+(+0.5)	16
+(+1)
+Above 60 to 65 	20.5	22
+(+1.5)	11.5
+(+0.5)	10.5
+(+1)
+Above 65 to 70 	15.5	16.5
+(+1)	9
+(+0.5)	7.5
+(+0.5)
+Above 70	12.5	12.5
+(No change)	7.5
+(No change)	5
+(No change)
+CPF contribution rates were raised for senior workers in 2022 and 2023. Following Budget 2023, the government will also be increasing the contribution rates further from 1 January 2024.
+
+The increased CPF contribution, like past increments, is channelled into the CPF Special Account to enable senior workers to accumulate more retirement savings.
+
+HOW THIS BENEFITS YOU:
+If you are a senior worker, you will enjoy higher contributions made by your employers.
+
+
+
+This will lead to a corresponding increase in your monthly CPF LIFE payouts and can provide enhanced retirement support, particularly if you plan to continue working after the retirement age.
+
+
+
+3. Increase in minimum CPF monthly payouts for non-CPF LIFE members
+Those who are not on CPF LIFE will stand to benefit too.
+
+
+
+Starting in June 2023, the minimum monthly payout for non-CPF LIFE members (i.e. those enrolled in the Retirement Sum Scheme) will increase from $250 to $350. There is no change for members already receiving monthly payouts of $350 or more.
+
+HOW THIS BENEFITS YOU:
+If you are not on CPF LIFE, the increased minimum monthly payout would mean that you can enjoy higher monthly payouts until your CPF savings are fully utilised.
+
+
+
+However, this would also mean that your current retirement savings might be depleted faster. You can consider boosting your retirement savings by making cash top-ups.
+
+Easier processes for seniors to receive their monthly payouts
+4. Auto-conversion of CPF inflows into monthly payouts
+Members who have started receiving their CPF LIFE payouts may have received additional contributions to their Ordinary and Special Account (OSA), such as the case of senior workers.
+
+
+
+If they have not set aside their cohort's Full Retirement Sum (FRS), these contributions will not be available for lump-sum withdrawal and are meant to be disbursed as monthly payouts. These members need to manually inform the CPF Board to annuitise their OSA savings (i.e. convert their savings to monthly payments) for higher CPF LIFE payouts.
+
+
+
+Starting in October 2023, the CPF Board will simplify the process for these members to enjoy greater monthly CPF LIFE payouts. Any non-withdrawable savings in their OSA will be automatically annuitised, resulting in higher payouts. An individual notification will be sent to affected members before the annuitisation occurs.
+
+
+
+Members who have set aside their cohort FRS will not have their OSA savings automatically annuitised, ensuring that these savings remain withdrawable at any time.
+
+HOW THIS BENEFITS YOU:
+If you have not set aside your cohort’s FRS, you will find it easier to receive higher payouts as there is no need to inform the CPF board to annuitise the OSA savings for higher CPF LIFE payouts in the future.
+
+
+
+This simplifies the process and eliminates the need for members to take additional steps to increase their payouts.
+
+5. Automatic commencement of monthly payouts for those born before 1948
+CPF savings are intended to provide monthly retirement income to members - who can choose to start their payouts from age 65. To do so, they would need to manually instruct the CPF Board.
+
+
+
+However, there are members who neglected to do so when they turn 65 years old. This prompted a change in 2018 for members to automatically receive payouts when they turn 70 (born in or after 1948).
+
+HOW THIS BENEFITS YOU:
+The automatic commencement of monthly payouts is now extended to members born before 1948 (i.e. those aged above 75), with around 85,000 members starting to receive payouts in their bank account from their birth month in June 2023. These members will be individually notified beforehand.
+
+TIP
+Even with these changes, it’s still important to remember that you can choose to start your CPF LIFE payouts at any time from age 65. Simply instruct the board via the Plan My Payouts form. Note that you may only defer your CPF LIFE monthly payouts up to age 70.
+
+Helping platform workers save more for their retirement
+6. CPF contributions for platform workers below age 30
+Platform workers such as delivery workers and private-hire drivers have less certainty in their earnings as compared to salaried employees. This makes it more important for them to consider how they can retire  to be an important one.
+
+
+
+To address this, platform workers below the age of 30 will be required to make CPF contributions from late 2024. The contribution rates of platform workers and the platform companies will be aligned to those of employees and employers respectively. Those who are older than 30 years old can also opt-in.
+
+
+
+The CPF contributions will be phased over a period of five years. Platform workers who earn $500 or less in a month do not need to make CPF contributions.
+
+
+
+To cushion the impact on take-home pay for lower-income platform workers, the Government will also introduce the Platform Worker CPF Transition Support from 2024 to 2027 to offset part of the additional CPF contributions. Singaporean platform workers who earn S$2,500 or less per month – including from platform work and other employment sources – will be eligible for the scheme if they are required to make CPF contributions or opt-in to do so.
+
+
+
+Additionally, eligible workers will also receive higher Workfare payments when the CPF contributions for platform workers are fully aligned with employees.
+
+HOW THIS BENEFITS YOU:
+If you were born in 1995 or later and working as a platform worker, you will receive CPF contributions from your platform company and have more retirement savings from 2024 onwards. You can also use your CPF Ordinary Account savings for your housing expenses. Refer to the MOM’s website for more details.
+
+Addressing cost-of-living concerns
+There are also measures in place to assist with current cost-of-living concerns.
+
+7. More Government support with increase in Assurance Package benefits
+As announced in Budget 2023, the Government will be increasing the Assurance Package (AP) further from $6.6 billion to $9.6 billion.
+
+
+
+The $3 billion increase takes into account higher inflation and provides additional one-time support to help Singaporeans with their cost-of-living concerns in 2023. Some examples of support are listed below.
+
+
+
+HOW THIS BENEFITS YOU:
+Assurance Package (AP) Cash
+About 2.9 million adult Singaporeans will get between S$700 and S$2,250 in total over five years - an increase of up to S$650 from what was earlier announced.
+
+
+
+Assurance Package (AP) MediSave
+
+Every Singaporean aged (i) 20 years and below, or (ii) 55 years and above, will receive up to $450 in their CPF MediSave Account from 2023 to 2025.
+
+
+The amount will be disbursed over three years, starting from Feb 2023.
+
+
+
+Assurance Package Senior’s Bonus (previously known as GSTV – Cash (Seniors’ Bonus))
+Lower-income senior Singapore citizens will receive cash payments of $600 to $900 through the Assurance Package (AP) Seniors' Bonus. The payment will be disbursed over three years from 2023 to 2025.
+
+
+
+Assurance Package (AP) – U-Save
+
+Eligible HDB households will receive additional U-Save rebates under the Assurance Package from 2023-2026 to help offset their monthly utilities bills.
+
+
+
+The AP U-Save rebates are on top of the regular GSTV – U-Save rebates under the GSTV scheme and will be credited together with households' regular GSTV – U-Save in the relevant months.
+
+
+
+Community Development Council (CDC) Vouchers
+
+On top of the $100 CDC Vouchers that were announced in October 2022 as part of the $1.5 billion Cost-of-Living package, an additional $100 CDC Vouchers will also be introduced in 2024 as part of the enhancements to the Assurance Package.
+
+
+
+In total, all Singaporean households will receive $600 worth of CDC Vouchers in 2023 and 2024.
+
+
+
+Visit the Support For You Calculator to view the estimated benefits you and your household may receive from the Government.
+
+8. Increased usage of MediSave and review of MediShield Life coverage to help manage healthcare costs
+Extended use of MediSave for homebound patients
+From late 2023, homebound patients who receive treatment for the conditions covered under the Chronic Disease Management Programme can use MediSave 500/700 and Flexi-MediSave schemes to pay for home medical care.
+
+
+
+This means such patients can use up to $500 or $700 early (depending on the complexity of the medical condition) from their MediSave savings to pay for medical bills, including consultation fees and blood tests conducted at home. Patients who are aged 60 and above can also use an additional $300 yearly under Flexi MediSave.
+
+
+
+Increased coverage for cancer medication under MediShield Life
+
+To assure the affordability of cancer drug treatments, MediShield Life claim limits for cancer drug services have been increased to $3,600 per calendar year. There is no change to the MediSave withdrawal limit of $600 per calendar year. Patients who have made cancer drug services claims in 2023 will be able to make additional MediShield Life claims from 1 April 2023, up to the new limit.
+
+HOW THIS BENEFITS YOU:
+Given that one of the key concerns about ageing is managing healthcare costs, extending the use of MediSave and reviewing coverage of MediShield Life are key steps to take.
+
+
+
+For example,  the new changes take into account how we can make fuller use of technology in our healthcare. In addition, the review of MediShield Life’s claim limits will help more cancer patients manage their finances more effectively.
+
+
+
+If you are looking for ways to manage your healthcare finances with these new changes, don’t forget the benefits of topping up your MediSave savings in cash while you are at it!
+
+New changes to CPF – what do they mean for you in the long term?
+The CPF changes announced in Budget 2023 are aimed at ensuring the retirement goals of our members are met while providing immediate support - particularly for vulnerable groups.
+
+
+
+As we look ahead, it is important to consider these measures - which include a combination of both long-term and short-term solutions - to help secure your financial future so that you can focus on pursuing the things that matter to you.
