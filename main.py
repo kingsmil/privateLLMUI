@@ -127,4 +127,6 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.green, secondar
 
 if __name__ == '__main__':
     # ui.launch(server_name="0.0.0.0",server_port=7000)
-    ui.launch(server_name="0.0.0.0",server_port=80)
+    gr.close_all()
+    ui.launch(server_name="0.0.0.0",server_port=7860)
+    print("LAUCHED SUCESSFULLY")
