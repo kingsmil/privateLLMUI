@@ -5,7 +5,7 @@ from langchain.chains import ConversationalRetrievalChain
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from langchain.vectorstores import Chroma
-from langchain.llms import GPT4All, LlamaCpp
+from langchain.llms import LlamaCpp
 import os
 import gradio as gr
 import subprocess
@@ -126,4 +126,5 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.green, secondar
     resetButton.click(reset_db, None)
 
 if __name__ == '__main__':
-    ui.launch()
+    # ui.launch(server_name="0.0.0.0",server_port=7000)
+    ui.launch(server_name="0.0.0.0",server_port=80)
