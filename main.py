@@ -102,8 +102,10 @@ def ingest_now(temp_files):
     # Close the temporary files
     for temp_file in temp_files:
         temp_file.close()
+    print("Done")
 
 
+callback = gr.CSVLogger()
 with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.green, secondary_hue=gr.themes.colors.emerald)) as ui:
     memory = gr.State(ConversationBufferMemory(memory_key="chat_history", return_messages=True, input_key='question',
                                                output_key='answer'))
@@ -122,11 +124,14 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.green, secondar
         ingest_docs = gr.Button(value="ingest documents")
         resetButton = gr.Button(value="reset db")
     question.submit(query_llm, [prompt, question, chatbot], [question, chatbot])
+    callback.setup([prompt, question, chatbot], "flagged_data_points")
     ingest_docs.click(ingest_now, file_output)
+    flag = gr.Button("Flag")
+    flag.click(lambda *args: callback.flag(args), [prompt, question, chatbot], None, preprocess=False)
     resetButton.click(reset_db, None)
 
 if __name__ == '__main__':
     # ui.launch(server_name="0.0.0.0",server_port=7000)
     gr.close_all()
-    ui.launch(server_name="0.0.0.0",server_port=7860)
+    ui.launch(server_name="0.0.0.0", server_port=7860, favicon_path='favicon.ico')
     print("LAUCHED SUCESSFULLY")
