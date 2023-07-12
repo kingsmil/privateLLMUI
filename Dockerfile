@@ -20,9 +20,5 @@ ENV MODEL_N_CTX=1000
 ENV MODEL_N_BATCH=8
 ENV TARGET_SOURCE_CHUNKS=4
 
-VOLUME ${CACHE_MOUNT:-./cache}:/home/privategpt/.cache/torch
-VOLUME ${MODEL_MOUNT:-./model}:/home/privategpt/model
-VOLUME ${PERSIST_MOUNT:-./db}:/home/privategpt/db
-
 # Run app.py when the container launches
 CMD ["python","main.py"]
