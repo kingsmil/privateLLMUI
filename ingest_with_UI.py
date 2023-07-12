@@ -5,7 +5,7 @@ from typing import List
 from dotenv import load_dotenv
 from multiprocessing import Pool
 from tqdm import tqdm
-
+import argparse
 from langchain.document_loaders import (
     CSVLoader,
     EverNoteLoader,
@@ -89,16 +89,11 @@ def load_single_document(file_path: str) -> List[Document]:
     raise ValueError(f"Unsupported file extension '{ext}'")
 
 
-def load_documents(source_dir: str, ignored_files: List[str] = []) -> List[Document]:
+def load_documents(file_paths: List[str], ignored_files: List[str] = []) -> List[Document]:
     """
     Loads all documents from the source documents directory, ignoring specified files
     """
-    all_files = []
-    for ext in LOADER_MAPPING:
-        all_files.extend(
-            glob.glob(os.path.join(source_dir, f"**/*{ext}"), recursive=True)
-        )
-    filtered_files = [file_path for file_path in all_files if file_path not in ignored_files]
+    filtered_files = [file_path for file_path in file_paths if file_path not in ignored_files and os.path.splitext(file_path)[1] in LOADER_MAPPING]
 
     with Pool(processes=os.cpu_count()) as pool:
         results = []
@@ -114,8 +109,15 @@ def process_documents(ignored_files: List[str] = []) -> List[Document]:
     """
     Load documents and split in chunks
     """
-    print(f"Loading documents from {source_directory}")
-    documents = load_documents(source_directory, ignored_files)
+    print(f"Loading documents from passed in files")
+    parser = argparse.ArgumentParser(description='Process some files.')
+    parser.add_argument('temp_file_paths', type=str, nargs='+', help='Paths to the temporary files')
+
+    args = parser.parse_args()
+
+    temp_file_paths = args.temp_file_paths
+    print(temp_file_paths," was passed in")
+    documents = load_documents(temp_file_paths, ignored_files)
     if not documents:
         print("No new documents to load")
         exit(0)
@@ -130,6 +132,7 @@ def does_vectorstore_exist(persist_directory: str) -> bool:
     """
     Checks if vectorstore exists
     """
+    print("checking for vector store....")
     if os.path.exists(os.path.join(persist_directory, 'index')):
         if os.path.exists(os.path.join(persist_directory, 'chroma-collections.parquet')) and os.path.exists(
                 os.path.join(persist_directory, 'chroma-embeddings.parquet')):
